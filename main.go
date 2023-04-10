@@ -1,3 +1,5 @@
+//go:generate go run github.com/Khan/genqlient genqlient.yaml
+
 package main
 
 import (
@@ -7,13 +9,14 @@ import (
 	"log"
 	"os"
 
+	"github.com/Khan/genqlient/graphql"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/template/html"
-	"github.com/machinebox/graphql"
 	"golang.org/x/oauth2"
+	"golang.org/x/sys/windows"
 )
 
-var client *graphql.Client
+var client graphql.Client
 
 type project struct{
 	Id string
@@ -26,15 +29,16 @@ type issue struct {
 	Estimate int 
 }
 
+var username = "dwainm"
 func main() {
 	src := oauth2.StaticTokenSource(
 		&oauth2.Token{AccessToken: getGithubToken()},
 	)
 	httpClient := oauth2.NewClient(context.Background(), src)
 
-	client = graphql.NewClient("https://api.github.com/graphql", graphql.WithHTTPClient(httpClient))
+	client = graphql.NewClient("https://api.github.com/graphql", httpClient)
 
-	client.Log = func(s string) { log.Println(s) }
+	// client.Log = func(s string) { log.Println(s) }
 	// Views engine
 	engine := html.New("./views", ".html")
 
@@ -56,10 +60,10 @@ func main() {
 			log.Println(err)
 			return err
 		}
-		// Render index - start with views directory
+		// // Render index - start with views directory
         return c.Render("project", fiber.Map{
 			"Title":"Project:" + project.Title ,
-			"Projects": getProjects(),
+			"Issues": getIssuesFor(project),
         })
 	})
 	log.Fatal(app.Listen(":3000"))
@@ -69,54 +73,19 @@ func getGithubToken() string {
 	return os.Getenv("PLANNING_JOKER_GH_TOKEN")
 }
 
-func getProjects() map[string]*project {
-
-	// make a request
-	req := graphql.NewRequest(`
-	query($username: String!){
-		user(login: $username) {
-			projectsV2(first: 20) {
-				nodes {
-					id
-					title
-				}
-			}
-		}
+func getProjects() map[string]*project{
+	projects, err := apiGetProjects(context.Background(), client, username);
+	if( err != nil){
+		log.Print(err)	
 	}
-	`)
-
-	// set any variables
-	req.Var("username", "dwainm")
-
-	// set header fields
-	req.Header.Set("Cache-Control", "no-cache")
-
-	// run it and capture the response
-	var respData struct {
-		User struct {
-			ProjectsV2 struct{
-				Nodes [] struct{
-					Id string
-					Title string
-				}
-			}
-		} 
+	tranformedProjects := make(map[string]*project)
+	for i, p := range projects.User.ProjectsV2.Nodes {
+		tranformedProjects[projects.User.ProjectsV2.Nodes[i].Id] = &project{Id:p.Id, Title: p.Title}
 	}
-	err := client.Run(context.Background(), req, &respData)
-	if  err != nil {
-		return make(map[string]*project)
-	}
-
-	projects := make(map[string]*project)
-
-	for i, p := range respData.User.ProjectsV2.Nodes {
-		projects[respData.User.ProjectsV2.Nodes[i].Id] = &project{Id:p.Id, Title: p.Title}
-	}
-
-	return projects
+	return tranformedProjects
 }
 
-func getProject( Id string ) (*project, error){
+func getProject( Id string ) (*project, error) {
 	projects := getProjects()
 	proj, ok := projects[Id];
 	if ok {
@@ -126,74 +95,56 @@ func getProject( Id string ) (*project, error){
 	}
 }
 
-// func getIssuesFor(project) *issue {
-		// var issueQuery struct {
-		// Node struct {
-		// 	ProjectsV2 struct{
-		// 		Nodes [] struct{
-		// 			Id string
-		// 			Title string
-		// 		}
-		// 	}  `graphql:"... on ProjectV2"`
-		// }  `graphql:"node(id: \"PVT_kwHOABolQs2J4g\")"`
+func getIssuesFor(proj *project) map[string]issue {
+	issues, err := apiGetProjectIssues(context.Background(), client, proj.Id)
+	fields, err := apiGetAllFields(context.Background(), client)
+	log.Println("== Isues data:")
+	log.Println(*issues)
+	log.Println(issues)
+	log.Println(err)
+	log.Println("== Field data:")
+	log.Println(fields.GetNode())
+
+	// // make a request
+	// req := graphql.NewRequest(`
+	// `)
+
+	// // set any variables
+	// req.Var("project_id", proj.Id)
+
+	// // set header fields
+	// req.Header.Set("Cache-Control", "no-cache")
+
+	// // run it and capture the response
+	// var respData struct {
+	// 	data struct {
+	// 		node struct {
+	// 			items struct{
+	// 			Nodes [] struct{
+	// 				Id string
+	// 				FieldValues struct{
+	// 				Nodes [] struct{
+	// 				Title string
+	// 			}
+	// 		}
+	// 	} 
+	// }
+	// err := client.Run(context.Background(), req, &respData)
+	// if  err != nil {
+	// 	return make(map[string]*project)
 	// }
 
-	// variables := map[string]interface{}{
-	// 	"owner": githubv4.String(owner),
-	// 	"name":  githubv4.String(name),
+	// projects := make(map[string]*project)
+
+	// for i, p := range respData.User.ProjectsV2.Nodes {
+	// 	projects[respData.User.ProjectsV2.Nodes[i].Id] = &project{Id:p.Id, Title: p.Title}
 	// }
 
-  // query{
-  //   node(id: "PROJECT_ID") {
-  //       ... on ProjectV2 {
-  //         items(first: 200) {
-  //           nodes{
-  //             id
-  //             fieldValues(first: 8) {
-  //               nodes{                
-  //                 ... on ProjectV2ItemFieldTextValue {
-  //                   text
-  //                   field {
-  //                     ... on ProjectV2FieldCommon {
-  //                       name
-  //                     }
-  //                   }
-  //                 }
-  //                 ... on ProjectV2ItemFieldDateValue {
-  //                   date
-  //                   field {
-  //                     ... on ProjectV2FieldCommon {
-  //                       name
-  //                     }
-  //                   }
-  //                 }
-  //                 ... on ProjectV2ItemFieldSingleSelectValue {
-  //                   name
-  //                   field {
-  //                     ... on ProjectV2FieldCommon {
-  //                       name
-  //                     }
-  //                   }
-  //                 }
-  //               }              
-  //             }
-  //             content{              
-  //               ... on DraftIssue {
-  //                 title
-  //                 body
-  //               }
-  //               ...on Issue {
-  //                 title
-  //                 assignees(first: 10) {
-  //                   nodes{
-  //                     login
-  //                   }
-  //                 }
-  //               }
-  //             }
-  //           }
-  //         }
-  //       }
-  //     }
-  //   }
-// }
+	// return projects
+	// // variables := map[string]interface{}{
+	// // 	"owner": githubv4.String(owner),
+	// // 	"name":  githubv4.String(name),
+	// // }
+	return make(map[string]issue)
+
+}
